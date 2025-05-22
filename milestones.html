@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Rosy Milestones</title>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <style>
+    /* Reset */
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden; /* prevent scrollbars */
+      background: white;
+      font-family: 'Helvetica Neue', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      user-select: none;
+    }
+
+    body {
+      height: 140px; /* fixed height to fit the tracker */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* Container */
+    .tracker-container {
+      max-width: 1100px;
+      width: 100%;
+      position: relative;
+      user-select: none;
+    }
+
+    .progress-bar {
+      height: 6px;
+      background-color: #f4c2c2;
+      position: absolute;
+      top: 40px;
+      left: 0;
+      right: 0;
+      border-radius: 3px;
+      overflow: hidden;
+      z-index: 0;
+    }
+
+    .progress-fill {
+      height: 6px;
+      background: linear-gradient(90deg, #f7b6c2, #f19ca7);
+      width: 0%;
+      transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .milestones {
+      display: flex;
+      justify-content: space-between;
+      position: relative;
+      z-index: 1;
+      padding-top: 20px;
+    }
+
+    .milestone {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      cursor: pointer;
+      flex: 1;
+      position: relative;
+      transition: transform 0.2s ease;
+    }
+
+    .milestone:hover {
+      transform: scale(1.05);
+    }
+
+    .icon-bg {
+      width: 42px;
+      height: 42px;
+      background-color: #f4d3d8;
+      border-radius: 50%;
+      margin-bottom: 12px;
+      filter: grayscale(100%) brightness(90%);
+      transition: all 0.3s ease;
+      position: relative;
+      z-index: 2;
+      box-shadow: inset 0 0 3px #e6a9b9;
+    }
+
+    .milestone.active .icon-bg {
+      background: linear-gradient(145deg, #fda4af, #f472b6);
+      box-shadow:
+        0 0 14px rgba(255, 175, 200, 0.7),
+        0 0 5px rgba(255, 240, 245, 0.7) inset;
+      filter: none;
+      animation: subtleGlow 2s ease-in-out infinite alternate;
+    }
+
+    @keyframes subtleGlow {
+      0% {
+        box-shadow:
+          0 0 10px rgba(255, 150, 180, 0.6),
+          0 0 6px rgba(255, 200, 220, 0.4) inset;
+      }
+      100% {
+        box-shadow:
+          0 0 18px rgba(255, 90, 140, 0.9),
+          0 0 12px rgba(255, 150, 180, 0.6) inset;
+      }
+    }
+
+    .milestone span {
+      font-size: 13px;
+      font-weight: 500;
+      color: #b85c75;
+      max-width: 100px;
+      display: block;
+      text-align: center;
+      margin-top: 16px;
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="tracker-container" role="list" aria-label="Rosy Milestones">
+    <div class="progress-bar" aria-hidden="true">
+      <div class="progress-fill"></div>
+    </div>
+    <div class="milestones">
+      <div class="milestone" data-step="0" role="listitem" tabindex="0" aria-pressed="false" aria-label="Launch Instagram milestone">
+        <div class="icon-bg"></div>
+        <span>Launch Instagram</span>
+      </div>
+      <div class="milestone" data-step="1" role="listitem" tabindex="0" aria-pressed="false" aria-label="Shopify Optimized milestone">
+        <div class="icon-bg"></div>
+        <span>Shopify Optimized</span>
+      </div>
+      <div class="milestone" data-step="2" role="listitem" tabindex="0" aria-pressed="false" aria-label="First Video milestone">
+        <div class="icon-bg"></div>
+        <span>First Video</span>
+      </div>
+      <div class="milestone" data-step="3" role="listitem" tabindex="0" aria-pressed="false" aria-label="First Samples milestone">
+        <div class="icon-bg"></div>
+        <span>First Samples</span>
+      </div>
+      <div class="milestone" data-step="4" role="listitem" tabindex="0" aria-pressed="false" aria-label="First Photoshoot milestone">
+        <div class="icon-bg"></div>
+        <span>First Photoshoot</span>
+      </div>
+      <div class="milestone" data-step="5" role="listitem" tabindex="0" aria-pressed="false" aria-label="FIRST DROP milestone">
+        <div class="icon-bg"></div>
+        <span>FIRST DROP</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const milestones = document.querySelectorAll('.milestone');
+    const progressFill = document.querySelector('.progress-fill');
+    let currentStep = parseInt(localStorage.getItem('rosyMilestone')) || 0;
+
+    function updateMilestones() {
+      milestones.forEach((milestone, i) => {
+        milestone.classList.toggle('active', i <= currentStep);
+        milestone.setAttribute('aria-pressed', i <= currentStep ? 'true' : 'false');
+      });
+      const fillPercent = (currentStep / (milestones.length - 1)) * 100;
+      progressFill.style.width = `${fillPercent}%`;
+    }
+
+    function launchConfetti() {
+      confetti({
+        particleCount: 90,
+        spread: 80,
+        origin: { y: 0.6 },
+        gravity: 0.5,
+        ticks: 250,
+        colors: [
+          '#f7b6c2', // light pink
+          '#f472b6', // medium pink
+          '#d45a85', // deep pink
+          '#f9a1b9', // pastel pink
+          '#e06a8a', // rose pink
+        ],
+      });
+    }
+
+    milestones.forEach((milestone, index) => {
+      milestone.addEventListener('click', () => {
+        if (index > currentStep) {
+          launchConfetti();
+        }
+        currentStep = index;
+        localStorage.setItem('rosyMilestone', currentStep);
+        updateMilestones();
+      });
+      milestone.addEventListener('keydown', (e) => {
+        if(e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          milestone.click();
+        }
+      });
+    });
+
+    updateMilestones();
+  </script>
+</body>
+</html>
