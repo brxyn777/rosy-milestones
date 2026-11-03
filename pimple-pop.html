@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pimple Pop</title>
+<style>
+  /* Layout: one 9:16 frame centered on a quiet backdrop; nothing else on screen */
+  :root {
+    --backdrop: #0f1b2b;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--backdrop);
+    display: grid; place-items: center;
+    overflow: hidden;
+  }
+  #reel {
+    display: block;
+    height: 100%; max-height: 100%;
+    width: auto; max-width: 100%;
+    aspect-ratio: 9 / 16;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="reel" width="1080" height="1920" aria-label="Line-drawn face where hollow blue pimples pop up and spread across the skin"></canvas>
+<script>
+(() => {
+  // ---- reel settings ----
+  const W = 1080, H = 1920, FPS = 60;
+  const TOTAL_SECONDS = 10;
+  const SPREAD_UNTIL = 8.2;         // no new pimples after this
+  const CAP = 72;
+  const POP = 0.32;                 // seconds for a pimple to pop up
+  const BUD = 0.12;                 // tiny bud before the pop
+  const SEED = 3;
+  const BLUE = '#2a63d8';
+
+  const canvas = document.getElementById('reel');
+  const ctx = canvas.getContext('2d');
+  const halo = document.createElement('canvas');
+  const HS = 0.25;
+  halo.width = W * HS; halo.height = H * HS;
+  const hctx = halo.getContext('2d');
+  const probe = document.createElement('canvas').getContext('2d');
+
+  let rng;
+  const mulberry = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const backOut = u => { const c1 = 2.4, c3 = c1 + 1; return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2); };
+
+  // ---- face line art, built as polylines so it can draw itself on ----
+  function catmull(pts, closed, n = 14) {
+    const out = [], P = closed ? [pts[pts.length - 1], ...pts, pts[0], pts[1]] : [pts[0], ...pts, pts[pts.length - 1]];
+    for (let i = 1; i < P.length - 2; i++) {
+      const [p0, p1, p2, p3] = [P[i - 1], P[i], P[i + 1], P[i + 2]];
+      for (let k = 0; k < n; k++) {
+        const t = k / n, t2 = t * t, t3 = t2 * t;
+        out.push([
+          0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+          0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3),
+        ]);
+      }
+    }
+    out.push(closed ? out[0] : pts[pts.length - 1]);
+    return out;
+  }
+  const mirror = pts => pts.map(([x, y]) => [W - x, y]);
+  const circle = (cx, cy, r, n = 40) => Array.from({ length: n + 1 }, (_, i) => [cx + Math.cos(i / n * 6.2832) * r, cy + Math.sin(i / n * 6.2832) * r]);
+  function eye(cx, cy) {
+    const pts = [];
+    for (let i = 0; i <= 24; i++) { const t = i / 24; pts.push([cx - 70 + 140 * t, cy - 30 * Math.sin(Math.PI * t) ** 0.8]); }
+    for (let i = 23; i >= 0; i--) { const t = i / 24; pts.push([cx - 70 + 140 * t, cy + 20 * Math.sin(Math.PI * t) ** 0.9]); }
+    return pts;
+  }
+
+  const outlinePts = [[540, 470], [735, 520], [860, 680], [882, 900], [848, 1100], [762, 1262], [642, 1356], [540, 1378], [438, 1356], [318, 1262], [232, 1100], [198, 900], [220, 680], [345, 520]];
+  const earR = [[874, 842], [928, 830], [948, 902], [932, 992], [882, 1034]];
+  const browL = [[352, 778], [420, 748], [494, 766]];
+  const neckL = [[446, 1342], [440, 1520], [380, 1602], [140, 1690], [-30, 1760]];
+
+  const FEATURES = [
+    { pts: catmull(outlinePts, true, 18), delay: 0.10, dur: 1.0 },
+    { pts: catmull(neckL, false), delay: 0.30, dur: 0.8 },
+    { pts: catmull(mirror(neckL), false), delay: 0.30, dur: 0.8 },
+    { pts: catmull(earR, false), delay: 0.45, dur: 0.5 },
+    { pts: catmull(mirror(earR), false), delay: 0.45, dur: 0.5 },
+    { pts: catmull(browL, false), delay: 0.60, dur: 0.4 },
+    { pts: catmull(mirror(browL), false), delay: 0.60, dur: 0.4 },
+    { pts: eye(420, 870), delay: 0.70, dur: 0.5 },
+    { pts: eye(660, 870), delay: 0.70, dur: 0.5 },
+    { pts: circle(420, 866, 19), delay: 0.95, dur: 0.3 },
+    { pts: circle(660, 866, 19), delay: 0.95, dur: 0.3 },
+    { pts: catmull([[548, 884], [553, 965], [572, 1032], [550, 1054], [522, 1050]], false), delay: 0.85, dur: 0.45 },
+    { pts: catmull([[452, 1182], [506, 1160], [540, 1172], [574, 1160], [628, 1182]], false), delay: 1.0, dur: 0.4 },
+    { pts: catmull([[452, 1182], [500, 1216], [540, 1224], [580, 1216], [628, 1182]], false), delay: 1.0, dur: 0.4 },
+  ];
+  for (const f of FEATURES) {
+    f.cum = [0];
+    for (let i = 1; i < f.pts.length; i++) f.cum.push(f.cum[i - 1] + Math.hypot(f.pts[i][0] - f.pts[i - 1][0], f.pts[i][1] - f.pts[i - 1][1]));
+  }
+
+  // skin where pimples may appear: inside the face, away from eyes, brows, nose ridge and lips
+  const facePath = new Path2D();
+  FEATURES[0].pts.forEach(([x, y], i) => i ? facePath.lineTo(x, y) : facePath.moveTo(x, y));
+  facePath.closePath();
+  const KEEP_OUT = [
+    { x: 420, y: 845, rx: 112, ry: 105 }, { x: 660, y: 845, rx: 112, ry: 105 },
+    { x: 540, y: 1192, rx: 118, ry: 58 }, { x: 545, y: 975, rx: 34, ry: 100 },
+  ];
+  function onSkin(x, y, r) {
+    for (let k = 0; k < 10; k++) {
+      const a = k / 10 * 6.2832, px = x + Math.cos(a) * (r + 22), py = y + Math.sin(a) * (r + 22);
+      if (!probe.isPointInPath(facePath, px, py)) return false;
+    }
+    for (const z of KEEP_OUT) {
+      const dx = (x - z.x) / (z.rx + r), dy = (y - z.y) / (z.ry + r);
+      if (dx * dx + dy * dy < 1) return false;
+    }
+    return true;
+  }
+
+  // ---- pimples ----
+  let pimples, frame;
+  const SEEDS = [[352, 1062, 1.15], [728, 1078, 1.85], [575, 600, 2.55], [548, 1300, 3.3]];
+
+  function newPimple(x, y, r, t) {
+    return { x, y, r, t0: t, nextSpawn: t + BUD + POP + 0.35 + rng() * 0.75, kids: 0 };
+  }
+  const radius = () => 15 + 22 * Math.pow(rng(), 1.6);
+
+  function reset() {
+    rng = mulberry(SEED);
+    frame = 0;
+    pimples = [];
+  }
+
+  function fits(x, y, r) {
+    if (!onSkin(x, y, r)) return false;
+    for (const p of pimples) if (Math.hypot(p.x - x, p.y - y) < p.r + r + 14) return false;
+    return true;
+  }
+
+  function spread(t) {
+    if (t > SPREAD_UNTIL) return;
+    for (const [x, y, ts] of SEEDS) {
+      if (t >= ts && t - 1 / FPS < ts) pimples.push(newPimple(x, y, 28, ts));
+    }
+    const born = [];
+    for (const p of pimples) {
+      if (t < p.nextSpawn || p.kids >= 3 || pimples.length + born.length >= CAP) continue;
+      p.nextSpawn = t + 0.45 + rng() * 0.8;
+      for (let tries = 0; tries < 14; tries++) {
+        const r = radius(), a = rng() * 6.2832, d = p.r + r + 18 + rng() * 70;
+        const x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d;
+        if (fits(x, y, r) && born.every(b => Math.hypot(b.x - x, b.y - y) > b.r + r + 14)) {
+          born.push(newPimple(x, y, r, t)); p.kids++; break;
+        }
+      }
+    }
+    pimples.push(...born);
+  }
+
+  function step() { spread(frame / FPS); frame++; }
+  const done = () => frame >= TOTAL_SECONDS * FPS;
+
+  // ---- drawing ----
+  const blobs = [
+    { x: 0.18, y: 0.14, r: 0.55, a: 0.55 }, { x: 0.86, y: 0.32, r: 0.45, a: 0.45 },
+    { x: 0.30, y: 0.62, r: 0.50, a: 0.40 }, { x: 0.78, y: 0.86, r: 0.55, a: 0.50 },
+    { x: 0.52, y: 0.42, r: 0.35, a: 0.35 },
+  ];
+  function background(t) {
+    const g = ctx.createLinearGradient(0, 0, W * 0.4, H);
+    g.addColorStop(0, '#e4f0fc'); g.addColorStop(0.55, '#cfe3f7'); g.addColorStop(1, '#bcd6f1');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    blobs.forEach((b, i) => {
+      const k = t * 0.18 + i * 1.7;
+      const x = (b.x + 0.04 * Math.sin(k)) * W, y = (b.y + 0.03 * Math.cos(k * 0.8)) * H;
+      const rg = ctx.createRadialGradient(x, y, 0, x, y, b.r * W);
+      rg.addColorStop(0, `rgba(255,255,255,${b.a})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+    });
+  }
+
+  function tracePartial(g, f, frac) {
+    if (frac <= 0) return;
+    const total = f.cum[f.cum.length - 1], goal = total * frac;
+    g.moveTo(f.pts[0][0], f.pts[0][1]);
+    for (let i = 1; i < f.pts.length; i++) {
+      if (f.cum[i] <= goal) { g.lineTo(f.pts[i][0], f.pts[i][1]); continue; }
+      const seg = f.cum[i] - f.cum[i - 1], u = seg ? (goal - f.cum[i - 1]) / seg : 0;
+      g.lineTo(f.pts[i - 1][0] + (f.pts[i][0] - f.pts[i - 1][0]) * u, f.pts[i - 1][1] + (f.pts[i][1] - f.pts[i - 1][1]) * u);
+      break;
+    }
+  }
+
+  // size of a pimple at time t: a bud, then an elastic pop to full size
+  function pimpleScale(p, t) {
+    const a = t - p.t0;
+    if (a < 0) return 0;
+    if (a < BUD) return 0.18 * ease(a / BUD);
+    const u = (a - BUD) / POP;
+    return u >= 1 ? 1 : 0.18 + 0.82 * backOut(u);
+  }
+
+  function draw() {
+    const t = frame / FPS;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    background(t);
+
+    // slow push-in toward the face
+    const z = 1.16 + 0.08 * ease(clamp(t / TOTAL_SECONDS, 0, 1));
+    const cx = W / 2, cy = 930;
+    const view = (g, k = 1) => g.setTransform(z * k, 0, 0, z * k, (cx - cx * z) * k, (cy - cy * z) * k);
+
+    const lines = FEATURES.map(f => ease(clamp((t - f.delay) / f.dur, 0, 1)));
+    const live = pimples.map(p => ({ p, s: pimpleScale(p, t) })).filter(o => o.s > 0);
+
+    // white glow behind everything drawn
+    view(hctx, HS);
+    hctx.save(); hctx.setTransform(1, 0, 0, 1, 0, 0); hctx.clearRect(0, 0, halo.width, halo.height); hctx.restore();
+    hctx.strokeStyle = '#fff'; hctx.fillStyle = '#fff'; hctx.lineCap = 'round'; hctx.lineJoin = 'round';
+    hctx.lineWidth = 34;
+    hctx.beginPath(); FEATURES.forEach((f, i) => tracePartial(hctx, f, lines[i])); hctx.stroke();
+    for (const { p, s } of live) { hctx.beginPath(); hctx.arc(p.x, p.y, p.r * s + 20, 0, 6.2832); hctx.fill(); }
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 0.85; ctx.filter = 'blur(14px)';
+    ctx.drawImage(halo, 0, 0, W, H); ctx.restore();
+
+    view(ctx);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+    // face line art
+    ctx.strokeStyle = BLUE; ctx.lineWidth = 5.5;
+    ctx.beginPath(); FEATURES.forEach((f, i) => tracePartial(ctx, f, lines[i])); ctx.stroke();
+
+    // pimples: hollow dome, a small head, and a ripple as each one pops
+    for (const { p, s } of live) {
+      const a = t - p.t0 - BUD, r = p.r * s;
+      if (a > 0 && a < 0.5) {
+        const u = a / 0.5;
+        ctx.strokeStyle = `rgba(42, 99, 216, ${0.35 * (1 - u)})`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (1 + 1.3 * ease(u)), 0, 6.2832); ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(42, 99, 216, 0.09)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.2832); ctx.fill();
+      ctx.strokeStyle = BLUE; ctx.lineWidth = Math.max(2.5, Math.min(5, p.r * 0.2));
+      ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(0.5, r - ctx.lineWidth / 2), 0, 6.2832); ctx.stroke();
+      if (s > 0.5) {
+        ctx.lineWidth = Math.max(2, p.r * 0.12);
+        ctx.beginPath(); ctx.arc(p.x - r * 0.12, p.y - r * 0.16, r * 0.3, 0, 6.2832); ctx.stroke();
+      }
+    }
+
+    // gentle edge falloff and fade-in
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const vg = ctx.createRadialGradient(W / 2, H / 2, W * 0.45, W / 2, H / 2, H * 0.62);
+    vg.addColorStop(0, 'rgba(90,140,200,0)'); vg.addColorStop(1, 'rgba(90,140,200,0.16)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    const fin = clamp(t / 0.4, 0, 1);
+    if (fin < 1) { ctx.fillStyle = `rgba(220,235,250,${1 - ease(fin)})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  // ---- hooks for the offline renderer ----
+  window.reel = {
+    W, H, FPS,
+    reset() { reset(); draw(); },
+    renderFrame() { step(); draw(); return done(); },
+  };
+
+  // ---- live preview: plays on a loop; click to restart ----
+  if (!new URLSearchParams(location.search).has('render')) {
+    reset();
+    let acc = 0, last = performance.now();
+    const loop = now => {
+      acc += Math.min(0.1, (now - last) / 1000); last = now;
+      let n = 0;
+      while (acc >= 1 / FPS && n < 3) { step(); acc -= 1 / FPS; n++; }
+      if (n) draw();
+      if (done()) reset();
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+    canvas.addEventListener('click', () => reset());
+  }
+})();
+</script>
+</body>
+</html>
