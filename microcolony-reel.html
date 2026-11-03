@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Microcolony Reel</title>
+<style>
+  /* Layout: one 9:16 frame centered on a quiet backdrop; nothing else on screen */
+  :root {
+    --backdrop: #0f1b2b;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--backdrop);
+    display: grid; place-items: center;
+    overflow: hidden;
+  }
+  #reel {
+    display: block;
+    height: 100%; max-height: 100%;
+    width: auto; max-width: 100%;
+    aspect-ratio: 9 / 16;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="reel" width="1080" height="1920" aria-label="Blue pill-shaped cells multiplying into a microcolony"></canvas>
+<script>
+(() => {
+  // ---- reel settings ----
+  const W = 1080, H = 1920, FPS = 60;
+  const GROW_SECONDS = 8.6;         // multiplication phase
+  const HOLD_SECONDS = 2.0;         // settle on the full colony
+  const TOTAL_FRAMES = Math.round((GROW_SECONDS + HOLD_SECONDS) * FPS);
+  const DOUBLING = 1.25;            // seconds per doubling (fast)
+  const HOLLOW_SHARE = 0.38;        // fraction of pills drawn as outlines
+  const SEED = 7;
+
+  // ---- cell model (units: µm) ----
+  const R = 0.46, L_DIV = 4.1, K = Math.LN2 / DOUBLING, GRID = 6;
+
+  const canvas = document.getElementById('reel');
+  const ctx = canvas.getContext('2d');
+  const halo = document.createElement('canvas');
+  const HS = 0.25;
+  halo.width = W * HS; halo.height = H * HS;
+  const hctx = halo.getContext('2d');
+
+  let rng;
+  const mulberry = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const rand = (a, b) => a + rng() * (b - a);
+  const randn = () => { let u = 0, v = 0; while (!u) u = rng(); while (!v) v = rng(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+  let cells, frame, cam;
+
+  function makeCell(x, y, a, L) {
+    return {
+      x, y, a, L,
+      Ldiv: L_DIV * (1 + 0.07 * randn()),
+      rate: 1 + 0.08 * randn(),
+      hollow: rng() < HOLLOW_SHARE,
+      tone: rand(-1, 1),
+      born: frame,
+      hx: 0, hy: 0, fx: 0, fy: 0, tq: 0,
+    };
+  }
+
+  function reset() {
+    rng = mulberry(SEED);
+    frame = 0;
+    cells = [];
+    cells.push(makeCell(-1.6, -0.4, 0.5, 2.5));
+    cells.push(makeCell(0.2, -0.8, -0.45, 3.0));
+    cells.push(makeCell(0.9, 0.75, 1.4, 3.6));
+    cells[0].hollow = false; cells[1].hollow = true; cells[2].hollow = false;
+    cam = { x: 0, y: 0, s: 105 };
+  }
+
+  function grow(dt) {
+    const born = [];
+    for (const c of cells) {
+      c.L *= Math.exp(K * c.rate * dt);
+      if (c.L >= c.Ldiv) {
+        const half = c.L / 2, off = half / 2;
+        const dx = Math.cos(c.a), dy = Math.sin(c.a);
+        const d = makeCell(c.x - dx * off, c.y - dy * off, c.a + 0.06 * randn(), half);
+        c.x += dx * off; c.y += dy * off; c.a += 0.06 * randn();
+        c.L = half; c.Ldiv = L_DIV * (1 + 0.07 * randn()); c.rate = 1 + 0.08 * randn();
+        c.hollow = rng() < HOLLOW_SHARE; c.born = frame; c.tone = rand(-1, 1);
+        born.push(d);
+      }
+    }
+    for (const b of born) cells.push(b);
+  }
+
+  const out = [0, 0, 0, 0];
+  function closest(p1x, p1y, q1x, q1y, p2x, p2y, q2x, q2y) {
+    const d1x = q1x - p1x, d1y = q1y - p1y, d2x = q2x - p2x, d2y = q2y - p2y;
+    const rx = p1x - p2x, ry = p1y - p2y;
+    const a = d1x * d1x + d1y * d1y, e = d2x * d2x + d2y * d2y, f = d2x * rx + d2y * ry;
+    let s, t;
+    if (a < 1e-9 && e < 1e-9) { s = 0; t = 0; }
+    else if (a < 1e-9) { s = 0; t = clamp(f / e, 0, 1); }
+    else {
+      const c = d1x * rx + d1y * ry;
+      if (e < 1e-9) { t = 0; s = clamp(-c / a, 0, 1); }
+      else {
+        const b = d1x * d2x + d1y * d2y, den = a * e - b * b;
+        if (den > 1e-6 * a * e) { s = clamp((b * f - c * e) / den, 0, 1); t = (b * s + f) / e; }
+        else { s = 0.5; t = (b * s + f) / e; }
+        if (t < 0) { t = 0; s = clamp(-c / a, 0, 1); }
+        else if (t > 1) { t = 1; s = clamp((b - c) / a, 0, 1); }
+      }
+    }
+    out[0] = p1x + d1x * s; out[1] = p1y + d1y * s;
+    out[2] = p2x + d2x * t; out[3] = p2y + d2y * t;
+  }
+
+  const grid = new Map();
+  function relax() {
+    grid.clear();
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i], h = (c.L - 2 * R) / 2;
+      c.hx = Math.cos(c.a) * h; c.hy = Math.sin(c.a) * h;
+      c.fx = 0; c.fy = 0; c.tq = 0;
+      const key = Math.floor(c.x / GRID) * 100003 + Math.floor(c.y / GRID);
+      let b = grid.get(key); if (!b) grid.set(key, b = []); b.push(i);
+    }
+    const D = 2 * R + 0.06; // a hair of spacing so outlines read cleanly
+    for (let i = 0; i < cells.length; i++) {
+      const A = cells[i], gx = Math.floor(A.x / GRID), gy = Math.floor(A.y / GRID);
+      for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+        const b = grid.get((gx + ox) * 100003 + gy + oy); if (!b) continue;
+        for (const j of b) {
+          if (j <= i) continue;
+          const B = cells[j], ddx = B.x - A.x, ddy = B.y - A.y, reach = A.L / 2 + B.L / 2 + 0.1;
+          if (ddx * ddx + ddy * ddy > reach * reach) continue;
+          closest(A.x - A.hx, A.y - A.hy, A.x + A.hx, A.y + A.hy, B.x - B.hx, B.y - B.hy, B.x + B.hx, B.y + B.hy);
+          let nx = out[0] - out[2], ny = out[1] - out[3], dist = Math.hypot(nx, ny);
+          if (dist >= D) continue;
+          if (dist < 1e-6) { const r = (i * 2.399 + j) % 6.283; nx = Math.cos(r); ny = Math.sin(r); dist = 1e-6; }
+          else { nx /= dist; ny /= dist; }
+          const F = D - dist;
+          A.fx += nx * F; A.fy += ny * F; A.tq += (out[0] - A.x) * ny * F - (out[1] - A.y) * nx * F;
+          B.fx -= nx * F; B.fy -= ny * F; B.tq -= (out[2] - B.x) * ny * F - (out[3] - B.y) * nx * F;
+        }
+      }
+    }
+    for (const c of cells) {
+      const m = 2.6 / c.L;
+      c.x += c.fx * 0.38 * m; c.y += c.fy * 0.38 * m;
+      c.a += clamp(c.tq * 0.38 * m * (3.2 / (c.L * c.L)), -0.08, 0.08);
+    }
+  }
+
+  function updateCamera() {
+    let sx = 0, sy = 0;
+    for (const c of cells) { sx += c.x; sy += c.y; }
+    sx /= cells.length; sy /= cells.length;
+    let rx = 0, ry = 0;
+    for (const c of cells) {
+      const e = c.L / 2;
+      rx = Math.max(rx, Math.abs(c.x - sx) + e); ry = Math.max(ry, Math.abs(c.y - sy) + e);
+    }
+    const target = clamp(Math.min(W * 0.40 / Math.max(rx, 3), H * 0.30 / Math.max(ry, 3)), 10, 105);
+    cam.x += (sx - cam.x) * 0.04; cam.y += (sy - cam.y) * 0.04;
+    cam.s += (target - cam.s) * 0.03;
+  }
+
+  // ---- one simulation tick per video frame ----
+  function step() {
+    const dt = 1 / FPS;
+    const t = frame / FPS;
+    if (t < GROW_SECONDS) grow(dt);
+    for (let i = 0; i < 10; i++) relax();
+    updateCamera();
+    frame++;
+  }
+
+  // ---- drawing ----
+  const blobs = [
+    { x: 0.18, y: 0.14, r: 0.55, a: 0.55 }, { x: 0.86, y: 0.32, r: 0.45, a: 0.45 },
+    { x: 0.30, y: 0.62, r: 0.50, a: 0.40 }, { x: 0.78, y: 0.86, r: 0.55, a: 0.50 },
+    { x: 0.52, y: 0.42, r: 0.35, a: 0.35 },
+  ];
+
+  function background(t) {
+    const g = ctx.createLinearGradient(0, 0, W * 0.4, H);
+    g.addColorStop(0, '#e4f0fc'); g.addColorStop(0.55, '#cfe3f7'); g.addColorStop(1, '#bcd6f1');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    blobs.forEach((b, i) => {
+      const k = t * 0.18 + i * 1.7;
+      const x = (b.x + 0.04 * Math.sin(k)) * W, y = (b.y + 0.03 * Math.cos(k * 0.8)) * H;
+      const rg = ctx.createRadialGradient(x, y, 0, x, y, b.r * W);
+      rg.addColorStop(0, `rgba(255,255,255,${b.a})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+    });
+  }
+
+  function draw() {
+    const t = frame / FPS;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    background(t);
+
+    const s = cam.s, ox = W / 2 - cam.x * s, oy = H / 2 - cam.y * s;
+    const segs = new Float32Array(cells.length * 4);
+    cells.forEach((c, k) => {
+      const h = (c.L - 2 * R) / 2, dx = Math.cos(c.a) * h, dy = Math.sin(c.a) * h;
+      segs[k * 4] = ox + (c.x - dx) * s; segs[k * 4 + 1] = oy + (c.y - dy) * s;
+      segs[k * 4 + 2] = ox + (c.x + dx) * s; segs[k * 4 + 3] = oy + (c.y + dy) * s;
+    });
+    const path = (g, dxo = 0, dyo = 0, filter) => {
+      g.beginPath();
+      for (let k = 0; k < cells.length; k++) {
+        if (filter && !filter(cells[k])) continue;
+        g.moveTo(segs[k * 4] + dxo, segs[k * 4 + 1] + dyo); g.lineTo(segs[k * 4 + 2] + dxo, segs[k * 4 + 3] + dyo);
+      }
+    };
+
+    // soft white glow around the colony
+    hctx.setTransform(HS, 0, 0, HS, 0, 0);
+    hctx.clearRect(0, 0, W, H);
+    hctx.lineCap = 'round'; hctx.strokeStyle = '#fff'; hctx.lineWidth = (2 * R + 0.9) * s;
+    path(hctx); hctx.stroke();
+    ctx.save(); ctx.globalAlpha = 0.7; ctx.filter = `blur(${Math.max(4, s * 0.22)}px)`;
+    ctx.drawImage(halo, 0, 0, W, H); ctx.restore();
+
+    ctx.lineCap = 'round';
+    const D = 2 * R * s;
+    const stroke = Math.max(2, s * 0.085);
+
+    // shadow under filled pills only
+    ctx.strokeStyle = 'rgba(20, 60, 140, 0.16)';
+    ctx.lineWidth = D;
+    path(ctx, s * 0.05, s * 0.09, c => !c.hollow); ctx.stroke();
+
+    // pills, with a quick scale-in pop on fresh daughters
+    for (let k = 0; k < cells.length; k++) {
+      const c = cells[k];
+      let x1 = segs[k * 4], y1 = segs[k * 4 + 1], x2 = segs[k * 4 + 2], y2 = segs[k * 4 + 3];
+      const age = (frame - c.born) / FPS;
+      const pop = age < 0.25 ? 0.94 + 0.06 * ease(age / 0.25) : 1;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      x1 = mx + (x1 - mx) * pop; y1 = my + (y1 - my) * pop; x2 = mx + (x2 - mx) * pop; y2 = my + (y2 - my) * pop;
+      const w = D * pop;
+
+      if (c.hollow) {
+        // translucent tint inside the outline
+        ctx.strokeStyle = 'rgba(70, 140, 235, 0.10)';
+        ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        // outline: draw the capsule ring
+        ctx.save();
+        ctx.strokeStyle = `hsl(${216 + c.tone * 4} 78% 46%)`;
+        ctx.lineWidth = stroke;
+        capsule(x1, y1, x2, y2, w / 2 - stroke / 2);
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.strokeStyle = `hsl(${216 + c.tone * 4} 80% ${50 + c.tone * 3}%)`;
+        ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        // soft top-light sheen
+        const nx = -Math.sin(c.a), ny = Math.cos(c.a), o = -w * 0.17;
+        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+        ctx.lineWidth = w * 0.3;
+        ctx.beginPath(); ctx.moveTo(x1 + nx * o, y1 + ny * o); ctx.lineTo(x2 + nx * o, y2 + ny * o); ctx.stroke();
+      }
+
+      // division line as the pill gets ready to split
+      const p = (c.L / c.Ldiv - 0.84) / 0.16;
+      if (p > 0) {
+        const nx = -Math.sin(c.a), ny = Math.cos(c.a), q = clamp(p, 0, 1), half = (w / 2) * (0.25 + 0.75 * q);
+        ctx.strokeStyle = c.hollow ? `hsla(216, 78%, 46%, ${q})` : `rgba(235, 245, 255, ${0.85 * q})`;
+        ctx.lineWidth = Math.max(1.5, stroke * 0.8);
+        ctx.lineCap = 'butt';
+        ctx.beginPath(); ctx.moveTo(mx - nx * half, my - ny * half); ctx.lineTo(mx + nx * half, my + ny * half); ctx.stroke();
+        ctx.lineCap = 'round';
+      }
+    }
+
+    // gentle edge falloff
+    const vg = ctx.createRadialGradient(W / 2, H / 2, W * 0.45, W / 2, H / 2, H * 0.62);
+    vg.addColorStop(0, 'rgba(90,140,200,0)'); vg.addColorStop(1, 'rgba(90,140,200,0.16)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+    // fade in from the background color
+    const fin = clamp(t / 0.5, 0, 1);
+    if (fin < 1) { ctx.fillStyle = `rgba(220,235,250,${1 - ease(fin)})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  function capsule(x1, y1, x2, y2, r) {
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    ctx.beginPath();
+    ctx.arc(x2, y2, r, a - Math.PI / 2, a + Math.PI / 2);
+    ctx.arc(x1, y1, r, a + Math.PI / 2, a + Math.PI * 1.5);
+    ctx.closePath();
+  }
+
+  // ---- hooks for the offline renderer ----
+  window.reel = {
+    W, H, FPS, TOTAL_FRAMES,
+    reset() { reset(); draw(); },
+    renderFrame() { step(); draw(); },
+  };
+
+  // ---- live preview: plays on a loop; click to restart ----
+  const params = new URLSearchParams(location.search);
+  if (!params.has('render')) {
+    reset();
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let acc = 0, last = performance.now();
+    const loop = now => {
+      acc += Math.min(0.1, (now - last) / 1000); last = now;
+      let n = 0;
+      while (acc >= 1 / FPS && n < 3) { step(); acc -= 1 / FPS; n++; }
+      if (n) draw();
+      if (frame >= TOTAL_FRAMES) reset();
+      if (!reduce || frame < TOTAL_FRAMES) requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+    canvas.addEventListener('click', () => reset());
+  }
+})();
+</script>
+</body>
+</html>
