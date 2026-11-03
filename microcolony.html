@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Blue Microcolony</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Layout: full-bleed microscope field; readouts float in the corners like an acquisition overlay */
+  :root {
+    --field: #dce5ee;
+    --field-deep: #c3d1e0;
+    --ink: #0c2446;
+    --ink-soft: rgba(12, 36, 70, 0.62);
+    --panel: rgba(255, 255, 255, 0.62);
+    --rule: rgba(12, 36, 70, 0.16);
+    --accent: #2459d6;
+    --display: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color-scheme: light;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--field);
+    color: var(--ink);
+    font-family: var(--display);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  #field {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+    cursor: crosshair;
+    touch-action: manipulation;
+  }
+  .bar {
+    position: fixed; left: 0; right: 0;
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    pointer-events: none;
+  }
+  .bar > * { pointer-events: auto; }
+  .bar.top { top: 0; align-items: flex-start; padding-block: calc(16px + env(safe-area-inset-top, 0px)) 0; }
+  .bar.bottom { bottom: 0; align-items: flex-end; padding-block: 0 calc(16px + env(safe-area-inset-bottom, 0px)); }
+
+  .title { display: grid; gap: 2px; pointer-events: none; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink-soft);
+  }
+  h1 { margin: 0; font-size: clamp(22px, 4vw, 30px); font-weight: 600; letter-spacing: -0.02em; text-wrap: balance; }
+
+  .controls {
+    display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;
+    background: var(--panel); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--rule); border-radius: 999px; padding: 4px;
+  }
+  .controls button {
+    font: 500 12px/1 var(--mono); color: var(--ink);
+    background: transparent; border: 0; border-radius: 999px;
+    padding: 8px 12px; cursor: pointer;
+  }
+  .controls button:hover { background: rgba(36, 89, 214, 0.1); }
+  .controls button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .readout {
+    display: grid; grid-template-columns: auto auto; gap: 4px 14px;
+    font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+    background: var(--panel); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--rule); border-radius: 10px; padding: 10px 14px;
+  }
+  .readout dt { color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.08em; font-size: 10.5px; align-self: center; }
+  .readout dd { margin: 0; text-align: right; font-weight: 500; }
+  .hint { grid-column: 1 / -1; color: var(--ink-soft); font-size: 10.5px; padding-top: 4px; border-top: 1px solid var(--rule); margin-top: 2px; }
+
+  .scale { display: grid; justify-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; color: var(--ink); pointer-events: none; }
+  .scale i { display: block; height: 4px; background: var(--ink); border-radius: 1px; transition: width 0.3s; }
+</style>
+</head>
+<body>
+<canvas id="field" aria-label="Animated microcolony of rod-shaped blue cells growing and dividing"></canvas>
+
+<div class="bar top">
+  <div class="title">
+    <span class="eyebrow">Phase field · 100× · rod-shaped cells</span>
+    <h1>Microcolony</h1>
+  </div>
+  <div class="controls" role="toolbar" aria-label="Playback">
+    <button id="play" type="button" aria-pressed="false">Pause</button>
+    <button id="s1" type="button" data-speed="1" aria-pressed="true">1×</button>
+    <button id="s2" type="button" data-speed="2" aria-pressed="false">2×</button>
+    <button id="s4" type="button" data-speed="4" aria-pressed="false">4×</button>
+    <button id="lineage" type="button" aria-pressed="false">Lineages</button>
+    <button id="reset" type="button" aria-pressed="false">Restart</button>
+  </div>
+</div>
+
+<div class="bar bottom">
+  <dl class="readout" aria-live="off">
+    <dt>Cells</dt><dd id="r-cells">3</dd>
+    <dt>Generation</dt><dd id="r-gen">0</dd>
+    <dt>Elapsed</dt><dd id="r-time">0:00</dd>
+    <dt>Doubling</dt><dd>20 min</dd>
+    <dd class="hint">Tap the field to seed a cell</dd>
+  </dl>
+  <div class="scale" aria-hidden="true"><i id="scale-bar"></i><span id="scale-label">5 µm</span></div>
+</div>
+
+<script>
+(() => {
+  // ---- model constants (units: µm, minutes) ----
+  const R = 0.46;              // cell radius (≈0.9 µm wide)
+  const L_DIV = 4.2;           // mean total length at division
+  const T_DOUBLE = 20;         // doubling time, minutes
+  const K = Math.LN2 / T_DOUBLE;
+  const CAP = 720;             // cells before the field resets
+  const MIN_PER_SEC = 6.5;     // simulated minutes per real second at 1×
+  const GRID = 6;
+
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const canvas = document.getElementById('field');
+  const ctx = canvas.getContext('2d');
+  const halo = document.createElement('canvas');
+  const hctx = halo.getContext('2d');
+  const HALO_RES = 0.25;
+  const hasFilter = 'filter' in ctx;
+
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = innerWidth; H = innerHeight;
+    canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+    halo.width = Math.max(1, Math.round(W * HALO_RES)); halo.height = Math.max(1, Math.round(H * HALO_RES));
+  }
+  addEventListener('resize', resize); resize();
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const randn = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+  const LINEAGE_HUES = [219, 203, 236, 211, 228];
+  let cells = [], simT = 0, maxGen = 0, nextLineage = 0;
+  let paused = false, speed = 1, lineageView = false;
+  let holdUntil = 0, fade = 0;
+  const cam = { x: 0, y: 0, s: 60 };
+
+  function makeCell(x, y, a, L, lin, gen) {
+    return {
+      x, y, a, L, lin, gen,
+      Ldiv: L_DIV * (1 + 0.07 * randn()),
+      rate: 1 + 0.08 * randn(),
+      tone: rand(-5, 5),
+      hx: 0, hy: 0, fx: 0, fy: 0, tq: 0,
+    };
+  }
+
+  function seed() {
+    cells = []; simT = 0; maxGen = 0; nextLineage = 0; holdUntil = 0;
+    // three founders, loosely arranged like the first frame of a time-lapse
+    cells.push(makeCell(-1.7, -0.5, 0.55, 2.4, nextLineage++, 0));
+    cells.push(makeCell(0.15, -0.75, -0.5, 2.9, nextLineage++, 0));
+    cells.push(makeCell(0.85, 0.7, 1.35, 3.6, nextLineage++, 0));
+    cam.x = 0; cam.y = 0; cam.s = Math.min(W, H) * 0.36 / 4;
+  }
+
+  function grow(dt) {
+    const born = [];
+    for (const c of cells) {
+      c.L *= Math.exp(K * c.rate * dt);
+      if (c.L >= c.Ldiv && cells.length + born.length < CAP) {
+        const half = c.L / 2, off = half / 2;
+        const dx = Math.cos(c.a), dy = Math.sin(c.a);
+        const d = makeCell(c.x - dx * off, c.y - dy * off, c.a + 0.05 * randn(), half, c.lin, c.gen + 1);
+        c.x += dx * off; c.y += dy * off; c.a += 0.05 * randn();
+        c.L = half; c.gen += 1; c.Ldiv = L_DIV * (1 + 0.07 * randn()); c.rate = 1 + 0.08 * randn(); c.tone = rand(-5, 5);
+        if (c.gen > maxGen) maxGen = c.gen;
+        born.push(d);
+      } else if (c.L >= c.Ldiv) {
+        c.L = c.Ldiv; // colony is full; stop elongating
+      }
+    }
+    for (const b of born) cells.push(b);
+  }
+
+  // closest points between segments P1Q1 and P2Q2 -> writes into out[0..3]
+  const out = [0, 0, 0, 0];
+  function closest(p1x, p1y, q1x, q1y, p2x, p2y, q2x, q2y) {
+    const d1x = q1x - p1x, d1y = q1y - p1y, d2x = q2x - p2x, d2y = q2y - p2y;
+    const rx = p1x - p2x, ry = p1y - p2y;
+    const a = d1x * d1x + d1y * d1y, e = d2x * d2x + d2y * d2y, f = d2x * rx + d2y * ry;
+    let s, t;
+    if (a < 1e-9 && e < 1e-9) { s = 0; t = 0; }
+    else if (a < 1e-9) { s = 0; t = clamp(f / e, 0, 1); }
+    else {
+      const c = d1x * rx + d1y * ry;
+      if (e < 1e-9) { t = 0; s = clamp(-c / a, 0, 1); }
+      else {
+        const b = d1x * d2x + d1y * d2y, den = a * e - b * b;
+        if (den > 1e-6 * a * e) {
+          s = clamp((b * f - c * e) / den, 0, 1);
+          t = (b * s + f) / e;
+        } else {
+          s = 0.5; t = (b * s + f) / e; // near-parallel: contact mid-overlap
+        }
+        if (t < 0) { t = 0; s = clamp(-c / a, 0, 1); }
+        else if (t > 1) { t = 1; s = clamp((b - c) / a, 0, 1); }
+      }
+    }
+    out[0] = p1x + d1x * s; out[1] = p1y + d1y * s;
+    out[2] = p2x + d2x * t; out[3] = p2y + d2y * t;
+  }
+
+  const grid = new Map();
+  function relax() {
+    grid.clear();
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      const h = (c.L - 2 * R) / 2;
+      c.hx = Math.cos(c.a) * h; c.hy = Math.sin(c.a) * h;
+      c.fx = 0; c.fy = 0; c.tq = 0;
+      const key = Math.floor(c.x / GRID) * 100003 + Math.floor(c.y / GRID);
+      let b = grid.get(key); if (!b) grid.set(key, b = []); b.push(i);
+    }
+    const D = 2 * R;
+    for (let i = 0; i < cells.length; i++) {
+      const A = cells[i];
+      const gx = Math.floor(A.x / GRID), gy = Math.floor(A.y / GRID);
+      for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+        const b = grid.get((gx + ox) * 100003 + gy + oy); if (!b) continue;
+        for (const j of b) {
+          if (j <= i) continue;
+          const B = cells[j];
+          const ddx = B.x - A.x, ddy = B.y - A.y, reach = A.L / 2 + B.L / 2;
+          if (ddx * ddx + ddy * ddy > reach * reach) continue;
+          closest(A.x - A.hx, A.y - A.hy, A.x + A.hx, A.y + A.hy, B.x - B.hx, B.y - B.hy, B.x + B.hx, B.y + B.hy);
+          let nx = out[0] - out[2], ny = out[1] - out[3];
+          let dist = Math.hypot(nx, ny);
+          if (dist >= D) continue;
+          if (dist < 1e-6) { const r = Math.random() * 6.283; nx = Math.cos(r); ny = Math.sin(r); dist = 1e-6; }
+          else { nx /= dist; ny /= dist; }
+          const F = D - dist;
+          A.fx += nx * F; A.fy += ny * F; A.tq += (out[0] - A.x) * ny * F - (out[1] - A.y) * nx * F;
+          B.fx -= nx * F; B.fy -= ny * F; B.tq -= (out[2] - B.x) * ny * F - (out[3] - B.y) * nx * F;
+        }
+      }
+    }
+    for (const c of cells) {
+      const m = 2.6 / c.L;
+      c.x += c.fx * 0.38 * m;
+      c.y += c.fy * 0.38 * m;
+      c.a += clamp(c.tq * 0.38 * m * (3.2 / (c.L * c.L)), -0.08, 0.08);
+    }
+  }
+
+  function updateCamera() {
+    if (!cells.length) return;
+    let sx = 0, sy = 0;
+    for (const c of cells) { sx += c.x; sy += c.y; }
+    sx /= cells.length; sy /= cells.length;
+    let r = 0;
+    for (const c of cells) {
+      const d = Math.hypot(c.x - sx, c.y - sy) + c.L / 2;
+      if (d > r) r = d;
+    }
+    const target = clamp(Math.min(W, H) * 0.38 / Math.max(r, 4), 4, 120);
+    cam.x += (sx - cam.x) * 0.05; cam.y += (sy - cam.y) * 0.05;
+    cam.s += (target - cam.s) * 0.035;
+  }
+
+  // ---- drawing ----
+  const blobs = Array.from({ length: 7 }, (_, i) => ({
+    x: Math.random(), y: Math.random(), r: rand(0.18, 0.42),
+    sp: rand(0.012, 0.03) * (i % 2 ? 1 : -1), ph: rand(0, 6.28),
+    a: rand(0.18, 0.4),
+  }));
+
+  function drawField(t) {
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#e3eaf2'); g.addColorStop(1, '#cfdae6');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const m = Math.max(W, H);
+    for (const b of blobs) {
+      const k = reduceMotion ? 0 : t * b.sp;
+      const x = (b.x + 0.06 * Math.sin(k + b.ph)) * W, y = (b.y + 0.06 * Math.cos(k * 0.8 + b.ph)) * H;
+      const rg = ctx.createRadialGradient(x, y, 0, x, y, b.r * m);
+      rg.addColorStop(0, `rgba(255,255,255,${b.a})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  function cellColor(c, light) {
+    const hue = lineageView ? LINEAGE_HUES[c.lin % LINEAGE_HUES.length] : 217 + c.tone * 0.6;
+    const sat = lineageView ? 74 : 70;
+    return `hsl(${hue} ${sat}% ${light + c.tone * 0.6}%)`;
+  }
+
+  function draw(t) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawField(t);
+
+    const s = cam.s, ox = W / 2 - cam.x * s, oy = H / 2 - cam.y * s;
+    const segs = [];
+    for (const c of cells) {
+      const h = (c.L - 2 * R) / 2, dx = Math.cos(c.a) * h, dy = Math.sin(c.a) * h;
+      segs.push(ox + (c.x - dx) * s, oy + (c.y - dy) * s, ox + (c.x + dx) * s, oy + (c.y + dy) * s);
+    }
+
+    // phase-contrast style bright halo, rendered small and scaled up for softness
+    hctx.setTransform(HALO_RES, 0, 0, HALO_RES, 0, 0);
+    hctx.clearRect(0, 0, W, H);
+    hctx.lineCap = 'round'; hctx.strokeStyle = '#ffffff';
+    hctx.lineWidth = (2 * R + 1.1) * s;
+    hctx.beginPath();
+    for (let i = 0; i < segs.length; i += 4) { hctx.moveTo(segs[i], segs[i + 1]); hctx.lineTo(segs[i + 2], segs[i + 3]); }
+    hctx.stroke();
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    if (hasFilter) ctx.filter = `blur(${Math.max(2, s * 0.25)}px)`;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(halo, 0, 0, W, H);
+    ctx.restore();
+
+    // soft drop shadow beneath the cells
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(12,36,70,0.14)';
+    ctx.lineWidth = 2 * R * s + 2;
+    ctx.beginPath();
+    for (let i = 0; i < segs.length; i += 4) { ctx.moveTo(segs[i] + 1, segs[i + 1] + 2); ctx.lineTo(segs[i + 2] + 1, segs[i + 3] + 2); }
+    ctx.stroke();
+
+    const edge = Math.max(1, s * 0.07);
+    for (let k = 0, i = 0; k < cells.length; k++, i += 4) {
+      const c = cells[k];
+      const x1 = segs[i], y1 = segs[i + 1], x2 = segs[i + 2], y2 = segs[i + 3];
+      // membrane
+      ctx.strokeStyle = cellColor(c, 30);
+      ctx.lineWidth = 2 * R * s;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      // cytoplasm
+      ctx.strokeStyle = cellColor(c, 52);
+      ctx.lineWidth = 2 * R * s - 2 * edge;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      // glossy highlight along the upper flank
+      const nx = -Math.sin(c.a), ny = Math.cos(c.a), o = -R * s * 0.32;
+      ctx.strokeStyle = cellColor(c, 74);
+      ctx.globalAlpha = 0.75;
+      ctx.lineWidth = Math.max(1, R * s * 0.42);
+      ctx.beginPath(); ctx.moveTo(x1 + nx * o, y1 + ny * o); ctx.lineTo(x2 + nx * o, y2 + ny * o); ctx.stroke();
+      ctx.globalAlpha = 1;
+      // septum: constriction appears as the cell nears division
+      const p = (c.L / c.Ldiv - 0.82) / 0.18;
+      if (p > 0) {
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, pinch = clamp(p, 0, 1);
+        ctx.strokeStyle = cellColor(c, 30);
+        ctx.globalAlpha = pinch;
+        ctx.lineWidth = Math.max(1, edge * 1.2);
+        const w = R * s * (0.35 + 0.65 * pinch);
+        ctx.beginPath(); ctx.moveTo(mx - nx * w, my - ny * w); ctx.lineTo(mx + nx * w, my + ny * w); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // vignette like an objective's field stop
+    const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+    vg.addColorStop(0, 'rgba(60,85,120,0)'); vg.addColorStop(1, 'rgba(60,85,120,0.22)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+    if (fade > 0) { ctx.fillStyle = `rgba(220,229,238,${fade})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  // ---- HUD ----
+  const el = id => document.getElementById(id);
+  const rCells = el('r-cells'), rGen = el('r-gen'), rTime = el('r-time'), scaleBar = el('scale-bar'), scaleLabel = el('scale-label');
+  let hudAt = 0;
+  function hud(now) {
+    if (now - hudAt < 120) return; hudAt = now;
+    rCells.textContent = cells.length.toLocaleString();
+    rGen.textContent = maxGen;
+    const m = Math.floor(simT), h = Math.floor(m / 60);
+    rTime.textContent = `${h}:${String(m % 60).padStart(2, '0')}`;
+    const opts = [1, 2, 5, 10, 20, 50, 100];
+    let um = opts[opts.length - 1];
+    for (const o of opts) if (o * cam.s >= 70) { um = o; break; }
+    scaleBar.style.width = `${Math.round(um * cam.s)}px`;
+    scaleLabel.textContent = `${um} µm`;
+  }
+
+  // ---- loop ----
+  let last = performance.now();
+  function frame(now) {
+    const dtR = Math.min(0.05, (now - last) / 1000); last = now;
+    if (!paused) {
+      const dt = dtR * MIN_PER_SEC * speed;
+      if (cells.length < CAP) { simT += dt; grow(dt); }
+      else if (!holdUntil) holdUntil = now + 3500;
+      const iters = 3 + 3 * speed;
+      for (let i = 0; i < iters; i++) relax();
+      if (holdUntil && now > holdUntil) {
+        fade = Math.min(1, fade + dtR * 1.6);
+        if (fade >= 1) seed();
+      } else if (fade > 0) fade = Math.max(0, fade - dtR * 1.6);
+    }
+    updateCamera();
+    draw(now / 1000);
+    hud(now);
+    requestAnimationFrame(frame);
+  }
+
+  // ---- controls ----
+  const playBtn = el('play');
+  playBtn.addEventListener('click', () => {
+    paused = !paused;
+    playBtn.textContent = paused ? 'Play' : 'Pause';
+    playBtn.setAttribute('aria-pressed', String(paused));
+  });
+  for (const id of ['s1', 's2', 's4']) {
+    const b = el(id);
+    b.addEventListener('click', () => {
+      speed = Number(b.dataset.speed);
+      for (const o of ['s1', 's2', 's4']) el(o).setAttribute('aria-pressed', String(o === id));
+    });
+  }
+  const linBtn = el('lineage');
+  linBtn.addEventListener('click', () => { lineageView = !lineageView; linBtn.setAttribute('aria-pressed', String(lineageView)); });
+  el('reset').addEventListener('click', () => { fade = 0; seed(); });
+
+  canvas.addEventListener('pointerdown', e => {
+    if (cells.length >= CAP) return;
+    const x = cam.x + (e.clientX - W / 2) / cam.s, y = cam.y + (e.clientY - H / 2) / cam.s;
+    cells.push(makeCell(x, y, rand(0, Math.PI), rand(2.2, 3.2), nextLineage++, 0));
+  });
+
+  seed();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
