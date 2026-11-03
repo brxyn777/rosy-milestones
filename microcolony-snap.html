@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Microcolony Snap</title>
+<style>
+  /* Layout: one 9:16 frame centered on a quiet backdrop; nothing else on screen */
+  :root {
+    --backdrop: #0f1b2b;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--backdrop);
+    display: grid; place-items: center;
+    overflow: hidden;
+  }
+  #reel {
+    display: block;
+    height: 100%; max-height: 100%;
+    width: auto; max-width: 100%;
+    aspect-ratio: 9 / 16;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="reel" width="1080" height="1920" aria-label="Hollow blue oval cells pinching and snapping apart into a loose microcolony"></canvas>
+<script>
+(() => {
+  // ---- reel settings ----
+  const W = 1080, H = 1920, FPS = 60;
+  const CAP = 120;                  // stop dividing here so cells stay big and readable
+  const HOLD_SECONDS = 2.0;         // settle on the full colony after the last snap
+  const MAX_SECONDS = 13;           // hard ceiling on clip length
+  const CYCLE = 1.0;                // mean seconds between divisions (fast)
+  const POP = 0.28;                 // seconds the snap takes
+  const ANTICIPATE = 0.22;          // pinch into a peanut before the snap
+  const PINCH_LEN = 0.62;           // each half's length at full pinch, as a share of the parent
+  const PINCH_OFF = 0.27;           // each half's offset from center at full pinch, as a share of the parent
+  const SEED = 5;
+
+  // ---- cell model (units: µm) ----
+  const R = 0.56, GRID = 6, GAP = 0.34;
+
+  const canvas = document.getElementById('reel');
+  const ctx = canvas.getContext('2d');
+  const halo = document.createElement('canvas');
+  const HS = 0.25;
+  halo.width = W * HS; halo.height = H * HS;
+  const hctx = halo.getContext('2d');
+
+  let rng;
+  const mulberry = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const rand = (a, b) => a + rng() * (b - a);
+  const randn = () => { let u = 0, v = 0; while (!u) u = rng(); while (!v) v = rng(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const backOut = u => { const c1 = 2.2, c3 = c1 + 1; return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2); };
+
+  let cells, pops, frame, cam, lastPopFrame, uid;
+
+  const cellLength = () => clamp(2.25 + 0.15 * randn(), 1.95, 2.6);
+  const nextTime = t => t + CYCLE * clamp(1 + 0.32 * randn(), 0.45, 1.9);
+
+  function makeCell(x, y, a, L, t) {
+    return { id: uid++, x, y, a, L, divideAt: nextTime(t), popStart: -1, hx: 0, hy: 0, fx: 0, fy: 0, tq: 0 };
+  }
+
+  function reset() {
+    rng = mulberry(SEED);
+    frame = 0; uid = 0; pops = []; lastPopFrame = 0;
+    cells = [
+      makeCell(-0.72, -0.05, 1.78, 2.3, -0.45),
+      makeCell(0.78, 0.12, 2.45, 2.2, -0.8),
+    ];
+    cam = { x: 0, y: 0, s: 92 };
+  }
+
+  // a cell splits: its twin starts tucked inside it and springs out end to end
+  function divide(t) {
+    const born = [];
+    for (const c of cells) {
+      if (t < c.divideAt || c.popStart >= 0) continue;
+      if (cells.length + born.length >= CAP) { c.divideAt = Infinity; continue; }
+      const L = cellLength(), parentL = c.L;
+      const d = makeCell(c.x, c.y, c.a, L, t);
+      c.L = cellLength();
+      c.a += 0.03 * randn(); d.a = c.a;
+      c.divideAt = nextTime(t + POP); d.divideAt = nextTime(t + POP);
+      c.popStart = d.popStart = frame;
+      pops.push({ a: c, b: d, start: frame, dirA: c.a, flip: rng() < 0.5 ? 1 : -1, sep0: 2 * PINCH_OFF * parentL, twA: 0.32 * randn(), twB: 0.32 * randn() });
+      born.push(d);
+      lastPopFrame = frame;
+    }
+    for (const b of born) cells.push(b);
+  }
+
+  // drive siblings apart along their shared axis with an elastic overshoot
+  function drivePops() {
+    pops = pops.filter(p => {
+      const u = (frame - p.start) / (POP * FPS);
+      if (u >= 1) { p.a.popStart = p.b.popStart = -1; return false; }
+      const mx = (p.a.x + p.b.x) / 2, my = (p.a.y + p.b.y) / 2;
+      const full = (p.a.L + p.b.L) / 2 + GAP;
+      const sep = p.sep0 + (full - p.sep0) * backOut(u);
+      const dx = Math.cos(p.dirA) * p.flip, dy = Math.sin(p.dirA) * p.flip;
+      p.a.x = mx - dx * sep / 2; p.a.y = my - dy * sep / 2;
+      p.b.x = mx + dx * sep / 2; p.b.y = my + dy * sep / 2;
+      const bo = backOut(u);
+      p.a.a = p.dirA + p.twA * bo; p.b.a = p.dirA + p.twB * bo;
+      return true;
+    });
+  }
+
+  const out = [0, 0, 0, 0];
+  function closest(p1x, p1y, q1x, q1y, p2x, p2y, q2x, q2y) {
+    const d1x = q1x - p1x, d1y = q1y - p1y, d2x = q2x - p2x, d2y = q2y - p2y;
+    const rx = p1x - p2x, ry = p1y - p2y;
+    const a = d1x * d1x + d1y * d1y, e = d2x * d2x + d2y * d2y, f = d2x * rx + d2y * ry;
+    let s, t;
+    if (a < 1e-9 && e < 1e-9) { s = 0; t = 0; }
+    else if (a < 1e-9) { s = 0; t = clamp(f / e, 0, 1); }
+    else {
+      const c = d1x * rx + d1y * ry;
+      if (e < 1e-9) { t = 0; s = clamp(-c / a, 0, 1); }
+      else {
+        const b = d1x * d2x + d1y * d2y, den = a * e - b * b;
+        if (den > 1e-6 * a * e) { s = clamp((b * f - c * e) / den, 0, 1); t = (b * s + f) / e; }
+        else { s = 0.5; t = (b * s + f) / e; }
+        if (t < 0) { t = 0; s = clamp(-c / a, 0, 1); }
+        else if (t > 1) { t = 1; s = clamp((b - c) / a, 0, 1); }
+      }
+    }
+    out[0] = p1x + d1x * s; out[1] = p1y + d1y * s;
+    out[2] = p2x + d2x * t; out[3] = p2y + d2y * t;
+  }
+
+  const grid = new Map();
+  function relax() {
+    grid.clear();
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i], h = (c.L - 2 * R) / 2;
+      c.hx = Math.cos(c.a) * h; c.hy = Math.sin(c.a) * h;
+      c.fx = 0; c.fy = 0; c.tq = 0;
+      const key = Math.floor(c.x / GRID) * 100003 + Math.floor(c.y / GRID);
+      let b = grid.get(key); if (!b) grid.set(key, b = []); b.push(i);
+    }
+    const D = 2 * R + GAP;
+    for (let i = 0; i < cells.length; i++) {
+      const A = cells[i], gx = Math.floor(A.x / GRID), gy = Math.floor(A.y / GRID);
+      for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+        const b = grid.get((gx + ox) * 100003 + gy + oy); if (!b) continue;
+        for (const j of b) {
+          if (j <= i) continue;
+          const B = cells[j];
+          if (A.popStart >= 0 && A.popStart === B.popStart && isPair(A, B)) continue;
+          const ddx = B.x - A.x, ddy = B.y - A.y, reach = A.L / 2 + B.L / 2 + 0.1;
+          if (ddx * ddx + ddy * ddy > reach * reach) continue;
+          closest(A.x - A.hx, A.y - A.hy, A.x + A.hx, A.y + A.hy, B.x - B.hx, B.y - B.hy, B.x + B.hx, B.y + B.hy);
+          let nx = out[0] - out[2], ny = out[1] - out[3], dist = Math.hypot(nx, ny);
+          if (dist >= D) continue;
+          if (dist < 1e-6) { const r = (A.id * 2.399 + B.id) % 6.283; nx = Math.cos(r); ny = Math.sin(r); dist = 1e-6; }
+          else { nx /= dist; ny /= dist; }
+          const F = D - dist;
+          A.fx += nx * F; A.fy += ny * F; A.tq += (out[0] - A.x) * ny * F - (out[1] - A.y) * nx * F;
+          B.fx -= nx * F; B.fy -= ny * F; B.tq -= (out[2] - B.x) * ny * F - (out[3] - B.y) * nx * F;
+        }
+      }
+    }
+    for (const c of cells) {
+      // rods slide along their length far more easily than sideways: chains and lobes, not a disc
+      const ax = Math.cos(c.a), ay = Math.sin(c.a);
+      const par = c.fx * ax + c.fy * ay, perp = -c.fx * ay + c.fy * ax;
+      const m = 0.38 * 2.6 / c.L;
+      c.x += (ax * par - ay * perp * 0.85) * m;
+      c.y += (ay * par + ax * perp * 0.85) * m;
+      if (c.popStart < 0) c.a += clamp(c.tq * m * (4.0 / (c.L * c.L)), -0.07, 0.07);
+    }
+  }
+  function isPair(A, B) { return pops.some(p => (p.a === A && p.b === B) || (p.a === B && p.b === A)); }
+
+  function updateCamera() {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const c of cells) {
+      const ex = Math.abs(Math.cos(c.a)) * c.L / 2 + R, ey = Math.abs(Math.sin(c.a)) * c.L / 2 + R;
+      minX = Math.min(minX, c.x - ex); maxX = Math.max(maxX, c.x + ex);
+      minY = Math.min(minY, c.y - ey); maxY = Math.max(maxY, c.y + ey);
+    }
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const target = clamp(Math.min(W * 0.78 / Math.max(maxX - minX, 6), H * 0.50 / Math.max(maxY - minY, 6)), 10, 92);
+    cam.x += (cx - cam.x) * 0.09; cam.y += (cy - cam.y) * 0.09;
+    cam.s += (target - cam.s) * (target < cam.s ? 0.045 : 0.02);
+  }
+
+  function step() {
+    const t = frame / FPS;
+    divide(t);
+    drivePops();
+    for (const c of cells) if (c.popStart < 0) { c.x += 0.004 * randn(); c.y += 0.004 * randn(); c.a += 0.003 * randn(); }
+    for (let i = 0; i < 10; i++) { relax(); drivePops(); }
+    updateCamera();
+    frame++;
+  }
+
+  const done = () => frame >= Math.min(MAX_SECONDS * FPS, (cells.length >= CAP ? lastPopFrame + (POP + HOLD_SECONDS) * FPS : Infinity));
+
+  // ---- drawing ----
+  const blobs = [
+    { x: 0.18, y: 0.14, r: 0.55, a: 0.55 }, { x: 0.86, y: 0.32, r: 0.45, a: 0.45 },
+    { x: 0.30, y: 0.62, r: 0.50, a: 0.40 }, { x: 0.78, y: 0.86, r: 0.55, a: 0.50 },
+    { x: 0.52, y: 0.42, r: 0.35, a: 0.35 },
+  ];
+
+  function background(t) {
+    const g = ctx.createLinearGradient(0, 0, W * 0.4, H);
+    g.addColorStop(0, '#e4f0fc'); g.addColorStop(0.55, '#cfe3f7'); g.addColorStop(1, '#bcd6f1');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    blobs.forEach((b, i) => {
+      const k = t * 0.18 + i * 1.7;
+      const x = (b.x + 0.04 * Math.sin(k)) * W, y = (b.y + 0.03 * Math.cos(k * 0.8)) * H;
+      const rg = ctx.createRadialGradient(x, y, 0, x, y, b.r * W);
+      rg.addColorStop(0, `rgba(255,255,255,${b.a})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+    });
+  }
+
+  function capsule(g, x1, y1, x2, y2, r) {
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    g.moveTo(x2 + Math.cos(a - Math.PI / 2) * r, y2 + Math.sin(a - Math.PI / 2) * r);
+    g.arc(x2, y2, r, a - Math.PI / 2, a + Math.PI / 2);
+    g.arc(x1, y1, r, a + Math.PI / 2, a + Math.PI * 1.5);
+    g.closePath();
+  }
+
+  const BLUE = '#2a63d8';
+  const layer = document.createElement('canvas');
+  layer.width = W; layer.height = H;
+  const lctx = layer.getContext('2d');
+
+  function draw() {
+    const t = frame / FPS;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    background(t);
+
+    const s = cam.s, ox = W / 2 - cam.x * s, oy = H / 2 - cam.y * s;
+    const stroke = Math.max(3, s * 0.095);
+
+    const shapes = [];
+    const push = (x, y, a, L, r) => {
+      const h = Math.max(0, (L - 2 * R) / 2), dx = Math.cos(a) * h, dy = Math.sin(a) * h;
+      shapes.push({ x1: ox + (x - dx) * s, y1: oy + (y - dy) * s, x2: ox + (x + dx) * s, y2: oy + (y + dy) * s, r: r * s });
+    };
+    for (const c of cells) {
+      const toPop = c.divideAt - t;
+      if (toPop > 0 && toPop < ANTICIPATE && cells.length < CAP) {
+        // pinch: the cell becomes two overlapping halves, a peanut with a waist
+        const q = ease(1 - toPop / ANTICIPATE);
+        const Lh = c.L * (1 - (1 - PINCH_LEN) * q), off = c.L * PINCH_OFF * q;
+        const dx = Math.cos(c.a) * off, dy = Math.sin(c.a) * off;
+        push(c.x - dx, c.y - dy, c.a, Lh, R);
+        push(c.x + dx, c.y + dy, c.a, Lh, R);
+      } else if (c.popStart >= 0) {
+        // snap: each half springs out to full size with an overshoot
+        const u = (frame - c.popStart) / (POP * FPS);
+        const k = PINCH_LEN + (1 - PINCH_LEN) * backOut(u);
+        push(c.x, c.y, c.a, Math.max(2 * R, c.L * k), R * (1 + 0.05 * Math.sin(u * Math.PI) * (1 - u)));
+      } else {
+        push(c.x, c.y, c.a, c.L, R);
+      }
+    }
+
+    // bright halo around the colony
+    hctx.setTransform(HS, 0, 0, HS, 0, 0);
+    hctx.clearRect(0, 0, W, H);
+    hctx.lineCap = 'round'; hctx.strokeStyle = '#fff'; hctx.lineWidth = (2 * R + 1.5) * s;
+    hctx.beginPath();
+    for (const p of shapes) { hctx.moveTo(p.x1, p.y1); hctx.lineTo(p.x2, p.y2); }
+    hctx.stroke();
+    ctx.save(); ctx.globalAlpha = 0.9; ctx.filter = `blur(${Math.max(6, s * 0.3)}px)`;
+    ctx.drawImage(halo, 0, 0, W, H); ctx.restore();
+
+    // faint inner tint, one shared color
+    ctx.fillStyle = 'rgba(42, 99, 216, 0.08)';
+    ctx.beginPath();
+    for (const p of shapes) capsule(ctx, p.x1, p.y1, p.x2, p.y2, p.r);
+    ctx.fill();
+
+    // hollow outlines drawn as union(outer) minus union(inner), so a pinching cell reads as one peanut
+    lctx.setTransform(1, 0, 0, 1, 0, 0);
+    lctx.clearRect(0, 0, W, H);
+    lctx.globalCompositeOperation = 'source-over';
+    lctx.fillStyle = BLUE;
+    lctx.beginPath();
+    for (const p of shapes) capsule(lctx, p.x1, p.y1, p.x2, p.y2, p.r);
+    lctx.fill();
+    lctx.globalCompositeOperation = 'destination-out';
+    lctx.beginPath();
+    for (const p of shapes) capsule(lctx, p.x1, p.y1, p.x2, p.y2, Math.max(0, p.r - stroke));
+    lctx.fill();
+    lctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(layer, 0, 0);
+
+    // gentle edge falloff
+    const vg = ctx.createRadialGradient(W / 2, H / 2, W * 0.45, W / 2, H / 2, H * 0.62);
+    vg.addColorStop(0, 'rgba(90,140,200,0)'); vg.addColorStop(1, 'rgba(90,140,200,0.16)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+    const fin = clamp(t / 0.5, 0, 1);
+    if (fin < 1) { ctx.fillStyle = `rgba(220,235,250,${1 - ease(fin)})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  // ---- hooks for the offline renderer ----
+  window.reel = {
+    W, H, FPS,
+    reset() { reset(); draw(); },
+    renderFrame() { step(); draw(); return done(); },
+  };
+
+  // ---- live preview: plays on a loop; click to restart ----
+  if (!new URLSearchParams(location.search).has('render')) {
+    reset();
+    let acc = 0, last = performance.now();
+    const loop = now => {
+      acc += Math.min(0.1, (now - last) / 1000); last = now;
+      let n = 0;
+      while (acc >= 1 / FPS && n < 3) { step(); acc -= 1 / FPS; n++; }
+      if (n) draw();
+      if (done()) reset();
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+    canvas.addEventListener('click', () => reset());
+  }
+})();
+</script>
+</body>
+</html>
